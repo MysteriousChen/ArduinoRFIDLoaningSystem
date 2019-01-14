@@ -79,10 +79,23 @@ void turnOnRFID(){
   mfrc522.PCD_Init();
 }
 
-void turnOnSD(){
-  
+void turnOnSD(){  
   digitalWrite(RFID_POWER_PIN, LOW);
   delay(CHANGE_TIME);
+}
+
+byte ledMode = 0;
+void ledState(byte mode){
+  analogWrite(6, 0); // R
+  analogWrite(5, 0); // G
+  analogWrite(3, 0); // B
+  if(mode == 0){
+    analogWrite(5, 180); // G  
+  }else if(mode == 1){
+    analogWrite(3, 120); // B  
+  }else{
+    analogWrite(6, 180); // R  
+  }
 }
 
 void setup() {
@@ -116,9 +129,7 @@ void setup() {
   // Setting RFID
   turnOnRFID();
   // Setting LED
-  analogWrite(6, 0); // R
-  analogWrite(5, 180); // G
-  analogWrite(3, 0); // B
+  ledState(0);
 }
 
 void writeSD(String str, const char* filename){
@@ -251,13 +262,11 @@ void loop() {
     if(TIFR1 & (1 << OCF1A)){
         if(wrong_Flag && timer < 8){
           timer++;
-            analogWrite(6, 180); // R
-            analogWrite(5, 0); // G
+            ledState(2); // warning mode
         }else{
             timer = 0;
             wrong_Flag = false;
-            analogWrite(6, 0); // R
-            analogWrite(5, 180); // G
+            ledState(ledMode);
         }
         TIFR1 = (1<<OCF1A);
     }
@@ -265,6 +274,7 @@ void loop() {
     int key = returnKey();
     // Change State
     if(key == 1 && mode == 0){
+        ledMode = 1;
         mode = 1;
         lcd.clear();
         lcd.setCursor(0,0);
@@ -273,6 +283,7 @@ void loop() {
         lcd.print("Please Put Item");
     }
     if(key == 2 && mode == 0){
+        ledMode = 1;
         mode = 2;
         lcd.clear();
         lcd.setCursor(0,0);
@@ -281,6 +292,7 @@ void loop() {
         lcd.print("Please Put Card");
     }
     if(key == 3 && mode == 0){
+        ledMode = 1;
         mode = 3;
         lcd.clear();
         lcd.setCursor(0,0);
@@ -289,6 +301,7 @@ void loop() {
         lcd.print("Please Put Item");
     }
     if(key == 4 && mode == 0){
+        ledMode = 1;
         mode = 4;
         lcd.clear();
         lcd.setCursor(0,0);
@@ -443,6 +456,8 @@ void loop() {
                   }
             }
         }
+     }else{
+        ledMode = 0;
      }
 }
 
