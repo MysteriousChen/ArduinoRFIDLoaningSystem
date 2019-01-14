@@ -9,8 +9,8 @@
 #define SS_PIN       10    // chip select pin
 MFRC522 mfrc522(SS_PIN, RST_PIN);
 // Setting SD
-#define SD_POWER_PIN    8
 #define CS_PIN 4
+#define MAX_LINENUM 50
 Sd2Card card;
 SdVolume volume;
 SdFile root;
@@ -36,22 +36,18 @@ unsigned long debounceDelay = 50;
 int lastButtonState = -1;
 int keepval;
 // Global Setting
-#define CHANGE_TIME 10
+#define CHANGE_TIME 20
 int mode = 0;
 byte lockFlag = 0; // no other actiob
 byte pressFlag = 0; // button flag
 byte lendFlag = 0; // lend state machine
 byte wrong_Flag = 0;
 byte timer = 0;
-String UID;
+String UID,itemUID;
 byte itemType[4];
 byte cursor = 0;
-byte i_idx = 0;
-byte u_idx = 0;
-byte l_idx = 0;
-String itemSets[2];
-String userSets[2];
-String lendSets[4];
+int l_len = 0;
+int l_line = 0;
 
 void SDIntital(){
   //----------- 寫入檔案
@@ -65,26 +61,19 @@ void SDIntital(){
   if(SD.remove("card.txt")){
       Serial.println(F("delete card.txt success"));
   }
-  if(SD.remove("item.txt")){
-      Serial.println(F("delete item.txt success"));
+  if(SD.remove("items.txt")){
+      Serial.println(F("delete items.txt success"));
   }
-  
-  openFile = SD.open("card.txt", FILE_WRITE);       // 開啟檔案，一次僅能開啟一個檔案
-  
-  if (openFile) {                                   // 假使檔案開啟正常
-    Serial.print(F("Write to card.txt..."));         
-    openFile.println("Test to write data to SD card...");  // 繼續寫在檔案後面
-    openFile.close();                               // 關閉檔案
-    Serial.println(F("Completed!"));
-  } else {
-    Serial.println(F("\n open file error "));    // 無法開啟時顯示錯誤
+  if(SD.remove("user.txt")){
+      Serial.println(F("delete user.txt success"));
+  }
+  if(SD.remove("lend.txt")){
+      Serial.println(F("delete lend.txt success"));
   }
   delay(CHANGE_TIME);
 }
 
 void turnOnRFID(){
-  digitalWrite(SD_POWER_PIN, LOW);
-  delay(CHANGE_TIME);
   digitalWrite(RFID_POWER_PIN, HIGH);
   delay(CHANGE_TIME);
   mfrc522.PCD_Init();
@@ -94,12 +83,6 @@ void turnOnSD(){
   
   digitalWrite(RFID_POWER_PIN, LOW);
   delay(CHANGE_TIME);
-  digitalWrite(SD_POWER_PIN, HIGH);
-  delay(CHANGE_TIME);
-  /*if (!SD.begin(4)) {
-    Serial.println(F("Fail!"));
-    return;
-  }*/
 }
 
 void setup() {
@@ -111,7 +94,6 @@ void setup() {
   // Global Setting
   pinMode(CS_PIN, OUTPUT);
   pinMode(RFID_POWER_PIN, OUTPUT);
-  pinMode(SD_POWER_PIN, OUTPUT);
   digitalWrite(RFID_POWER_PIN, LOW);
   // Timer Setting
   // Timer setting
@@ -124,7 +106,6 @@ void setup() {
   OCR1A = 1562;// 0.1sec
   interrupts();
   // Setting sd and list
-  digitalWrite(SD_POWER_PIN, HIGH);
   digitalWrite(CS_PIN, LOW);
   SDIntital();
   // Setting lcd
@@ -143,7 +124,7 @@ void setup() {
 void writeSD(String str, const char* filename){
     openFile = SD.open(filename, FILE_WRITE);
     if(openFile){
-        openFile.println("Write!!");
+        openFile.println(str);
         openFile.close();
         Serial.println(F("Write File Success!"));
     }else{
@@ -151,28 +132,21 @@ void writeSD(String str, const char* filename){
     }
 }
 
-
-void readSD(){
-  openFile = SD.open("card.txt", FILE_READ);
-  if(openFile){
-    while(openFile.available()){
-      Serial.write(openFile.read());
-    }
-    openFile.close();
-  }
-}
-
-byte checkIDExist(String &uid, const char* filename){
-    openFile = SD.open("card.txt", FILE_READ);
+int checkIDExist_SD(String &uid,byte mode){
+    // select file
+    openFile = (mode == 1)?SD.open("items.txt", FILE_READ):
+               (mode == 2)?SD.open("user.txt", FILE_READ):SD.open("lend.txt", FILE_READ);
+    // read file
     if(openFile){
         Serial.println(F("Open ReadFile Success!!"));
-        String str;
+        String str; int idx = 0;
         while(openFile.available()){
-            str = String(openFile.read());
+            idx++;
+            str = openFile.readStringUntil('\n');
             Serial.println(str);
-            if(uid.equals(str.substring(uid.length()))){
+            if(uid.equals(str.substring(0,uid.length()))){
                 openFile.close();
-                return 1;
+                return idx;
             }
         }
         openFile.close();
@@ -180,6 +154,55 @@ byte checkIDExist(String &uid, const char* filename){
         Serial.println(F("Open ReadFile Fail!"));
     }
     return 0;
+}
+
+int checkLendState(int line){
+    openFile = SD.open("lend.txt", FILE_READ);
+    if(openFile){
+        Serial.println(F("Open ReadFile Success!!"));
+        while(openFile.available()){
+            String str = openFile.readStringUntil('\n');
+            line--;
+            if(line == 0){
+                int len = str.length();
+                if(str[str.indexOf(':')+1] == 'X'){ // mean xxx:X (has been return)
+                    openFile.close();
+                    return str.indexOf(':');
+                }else{
+                    openFile.close();
+                    return 0;
+                }
+            }
+        }openFile.close();
+    }else{
+        Serial.println(F("Open ReadFile Fail!"));
+    }
+    return 0;
+}
+
+String convertStr2SDFormat(String str){
+    int len = str.length();
+    String tmp = String(str);
+    for(int i=len; i<= MAX_LINENUM; i++){
+        tmp += " ";
+    }return tmp;
+}
+
+void modifyLendState(String uid, int line, byte mode){
+    // 0 for borrow, 1 for return
+    openFile = SD.open("lend.txt", FILE_WRITE);
+    if(openFile){
+        Serial.println(F("Open Wtite File Success!"));
+        openFile.seek((line-1)*(MAX_LINENUM+3));
+        if(mode == 1){
+            String str = convertStr2SDFormat(uid + ":X");
+            openFile.println(str);
+            openFile.close();
+        }else{
+            openFile.println(uid);
+            openFile.close();
+        } 
+    }
 }
 
 byte returnKey(){ 
@@ -211,29 +234,15 @@ void lcdIDLE(){
     lcd.print("Ready!");
 }
 
-/// add
-byte CheckIDExists_t(String &uid, byte mode){
-    String *ref = (mode == 1)?itemSets:
-                  (mode == 2)?userSets:lendSets;
-    byte idx = (mode == 1)?i_idx:
-               (mode == 2)?u_idx:l_idx;
-    for(int i=0; i<idx; i++){
-        if(uid.equals(ref[i].substring(0,uid.length()))){
-            if(mode == 1){
-                Serial.println(F("item ID exist!!"));
-            }
-            else if (mode == 2){
-                Serial.println(F("User ID exist!!"));
-            }
-            else{
-                if(ref[i][ref[i].length()-1] == '0'){
-                  return 0;
-                }
-                Serial.println(F("item has been borrowed!!"));  
-            }
-            return 1;
-        }
-    }return 0;
+void readSD(){
+  openFile = SD.open("lend.txt", FILE_READ);
+  if(openFile){
+    while(openFile.available()){
+      Serial.write(openFile.read());
+    }
+    openFile.close();
+  }
+  delay(CHANGE_TIME);
 }
 
 void loop() {
@@ -307,13 +316,17 @@ void loop() {
             }
             //// add ////
             if(mode < 3){
-                 if(!CheckIDExists_t(UID, mode)){
+                 if(checkIDExist_SD(UID, mode) == 0){
                      if(mode == 1){
                           lcd.clear();
                           lcd.setCursor(0,0);
                           lcd.print("Enter ID:");
                       }else{
-                          Serial.println(F("Input Card"));
+                          lcd.clear();
+                          lcd.setCursor(0,0);
+                          lcd.print("Press #");
+                          lcd.setCursor(0,1);
+                          lcd.print("To Login");
                       }
                   }else{
                       wrong_Flag = true;
@@ -322,32 +335,61 @@ void loop() {
                   } 
             }else{
                   if(mode == 3){
-                      if(lendFlag == 0 && CheckIDExists_t(UID, 1)){ // check item ID
-                          if(!CheckIDExists_t(UID, 3)){
+                      if(lendFlag == 0){
+                          l_len = 0;
+                          l_len = 0;
+                      }
+                      if(lendFlag == 0 && checkIDExist_SD(UID, 1) > 0){ // check item ID
+                          if((l_line = checkIDExist_SD(UID, 3)) == 0){
                                 lendFlag = 1;
-                                lendSets[l_idx] = UID;
+                                itemUID = UID;
                                 lcd.clear();
                                 lcd.setCursor(0,0);
                                 lcd.print("Please Put Card"); 
                           }else{
-                              wrong_Flag = true;
+                              // item has been return
+                              if(l_line > 0 && (l_len = checkLendState(l_line)) > 0){;
+                                  lendFlag = 1;
+                                  itemUID = UID;
+                                  lcd.clear();
+                                  lcd.setCursor(0,0);
+                                  lcd.print("Please Put Card"); 
+                              }else{
+                                itemUID = "";
+                                wrong_Flag = true;
+                              }
                           }
-                      }else if(lendFlag == 1 && CheckIDExists_t(UID, 2)){ // check user ID
+                      }else if(lendFlag == 1 && checkIDExist_SD(UID, 2) > 0){ // check user ID
                           lendFlag = 0; mode = 0;
-                          lendSets[l_idx++] += ":" + UID;
+                          turnOnSD();
+                          if(l_len > 0) {
+                            modifyLendState(convertStr2SDFormat(String(itemUID + ":" + UID)), l_line, 0);
+                            readSD();
+                          }
+                          else writeSD(convertStr2SDFormat(String(itemUID + ":" + UID)),"lend.txt");
+                          turnOnRFID();
                           lcdIDLE();
-                          l_idx = l_idx % 4;
                       }else{
                         wrong_Flag = true;
                       }
                       lockFlag = 0;
                       UID = "";
-                  }else{
-                      if(CheckIDExists_t(UID, 1)){
-                          if(CheckIDExists_t(UID, 3)){
-                              Serial.println(F("Return Item"));
-                              lcdIDLE();
-                              UID = "";
+                  }else if(mode == 4){
+                      int line = 0, len = 0;
+                      if(checkIDExist_SD(UID, 1) > 0){
+                          if((line = checkIDExist_SD(UID, 3)) > 0){
+                              if((len = checkLendState(line)) == 0){
+                                  Serial.println(F("Return Item"));
+                                  turnOnSD();
+                                  modifyLendState(UID, line, 1);
+                                  turnOnRFID();
+                                  mode = 0; lockFlag = 0;
+                                  lcdIDLE();
+                                  UID = ""; 
+                              }else{
+                                wrong_Flag = true;
+                                lockFlag = 0;
+                              }
                           }else{
                               wrong_Flag = true;
                               lockFlag = 0;
@@ -356,22 +398,9 @@ void loop() {
                           wrong_Flag = true;  
                           lockFlag = 0;
                       }
-                      
                   }
             }
-            //// add ////
-            /*>>>>>>>>>>>>>>>if(!checkIDExist(itemUID,"card.txt")){
-                Serial.println(F("New Item login!!"));
-                lcd.clear();
-                lcd.setCursor(0,0);
-                lcd.print("Enter ID:");
-                lockFlag = 1;
-            }else{
-                Serial.println(F("Item has been logged!!"));
-                lockFlag = 0;
-            }>>>>>>>>>>>>>>>>>*/
             mfrc522.PICC_HaltA();
-            //>>>>>>>>>>>>>>>>turnOnRFID();
         }
         if(lockFlag == 1 && pressFlag == 1 && mode < 3){
             if(mode == 1){
@@ -395,12 +424,9 @@ void loop() {
                         String itemTypeStr;
                         for(byte i=0; i<4; i++)
                             itemTypeStr += String(itemType[i], DEC);
-                        itemSets[i_idx] = UID + ":" + itemTypeStr; // add
-                        Serial.println(itemSets[i_idx%2]); // add
-                        i_idx = (i_idx == 2)?2:i_idx+1;   // add
-                        //>>>>>>>>>>>>>>>>> turnOnSD();
-                        //>>>>>>>>>>>>>>>>> writeSD(itemUID + ":" + itemTypeStr,"item.txt");
-                        //>>>>>>>>>>>>>>>>> turnOnRFID();
+                        turnOnSD();
+                        writeSD(UID + ":" + itemTypeStr,"items.txt");
+                        turnOnRFID();
                         // lcd
                         lcdIDLE();
                         UID = "";
@@ -409,8 +435,9 @@ void loop() {
             }else{
                   if(key == 12){
                       mode = 0; lockFlag = 0;
-                      userSets[u_idx%2] = UID;
-                      u_idx = (u_idx == 2)?2:u_idx+1;   
+                      turnOnSD();
+                      writeSD(UID ,"user.txt");
+                      turnOnRFID();
                       lcdIDLE();
                       UID = "";
                   }
