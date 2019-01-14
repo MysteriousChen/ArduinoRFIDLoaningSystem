@@ -17,21 +17,22 @@ SdFile root;
 File openFile;
 // Setting LCD
 LiquidCrystal_I2C lcd(0x3F, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);
-// Setting KeyPad (10:'C', 11: '#')
-#define GET_KEY(x) (((x)>=920 && (x)<=930) ? 1 : \
-                    ((x)>=900 && (x)<=915) ? 2 : \
-                    ((x)>=885 && (x)<=895) ? 3 : \
-                    ((x)>=841 && (x)<=860) ? 4 : \
-                    ((x)>=828 && (x)<=840) ? 5 : \
-                    ((x)>=810 && (x)<=827) ? 6 : \
-                    ((x)>=776 && (x)<=790) ? 7 : \
-                    ((x)>=763 && (x)<=775) ? 8 : \
-                    ((x)>=750 && (x)<=762) ? 9 : \
-                    ((x)>=709 && (x)<=719) ? 0 : \     
-                    ((x)>=736 && (x)<=749) ? 10 : \
-                    ((x)>=699 && (x)<=708) ? 11 : -1)   
+// Setting KeyPad (10:'C', 11:'*', 12:'#')
+#define GET_KEY(x) (((x)>=615 && (x)<=630) ? 1 : \
+                    ((x)>=600 && (x)<=614) ? 2 : \
+                    ((x)>=590 && (x)<=599) ? 3 : \
+                    ((x)>=563 && (x)<=580) ? 4 : \
+                    ((x)>=550 && (x)<=562) ? 5 : \
+                    ((x)>=540 && (x)<=549) ? 6 : \
+                    ((x)>=520 && (x)<=535) ? 7 : \
+                    ((x)>=510 && (x)<=519) ? 8 : \
+                    ((x)>=502 && (x)<=509) ? 9 : \
+                    ((x)>=493 && (x)<=501) ? 10 : \
+                    ((x)>=481 && (x)<=492) ? 11 : \
+                    ((x)>=473 && (x)<=480) ? 0 : \
+                    ((x)>=460 && (x)<=472) ? 12 : -1)
 unsigned long lastDebounceTime;
-unsigned long debounceDelay = 100;
+unsigned long debounceDelay = 50;
 int lastButtonState = -1;
 int keepval;
 // Global Setting
@@ -39,9 +40,18 @@ int keepval;
 int mode = 0;
 byte lockFlag = 0; // no other actiob
 byte pressFlag = 0; // button flag
-String itemUID;
+byte lendFlag = 0; // lend state machine
+byte wrong_Flag = 0;
+byte timer = 0;
+String UID;
 byte itemType[4];
 byte cursor = 0;
+byte i_idx = 0;
+byte u_idx = 0;
+byte l_idx = 0;
+String itemSets[2];
+String userSets[2];
+String lendSets[4];
 
 void SDIntital(){
   //----------- 寫入檔案
@@ -86,10 +96,10 @@ void turnOnSD(){
   delay(CHANGE_TIME);
   digitalWrite(SD_POWER_PIN, HIGH);
   delay(CHANGE_TIME);
-  if (!SD.begin(4)) {
+  /*if (!SD.begin(4)) {
     Serial.println(F("Fail!"));
     return;
-  }
+  }*/
 }
 
 void setup() {
@@ -103,6 +113,16 @@ void setup() {
   pinMode(RFID_POWER_PIN, OUTPUT);
   pinMode(SD_POWER_PIN, OUTPUT);
   digitalWrite(RFID_POWER_PIN, LOW);
+  // Timer Setting
+  // Timer setting
+  noInterrupts();
+  TCCR1A = 0;
+  TCCR1B = 0;
+  TCNT1 = 0;
+  TCCR1B |= (1 << WGM12);
+  TCCR1B |= (1 << CS12) | (1 << CS10);
+  OCR1A = 1562;// 0.1sec
+  interrupts();
   // Setting sd and list
   digitalWrite(SD_POWER_PIN, HIGH);
   digitalWrite(CS_PIN, LOW);
@@ -131,6 +151,17 @@ void writeSD(String str, const char* filename){
     }
 }
 
+
+void readSD(){
+  openFile = SD.open("card.txt", FILE_READ);
+  if(openFile){
+    while(openFile.available()){
+      Serial.write(openFile.read());
+    }
+    openFile.close();
+  }
+}
+
 byte checkIDExist(String &uid, const char* filename){
     openFile = SD.open("card.txt", FILE_READ);
     if(openFile){
@@ -153,6 +184,8 @@ byte checkIDExist(String &uid, const char* filename){
 
 byte returnKey(){ 
     byte key = GET_KEY(analogRead(A1));
+    //Serial.println(analogRead(A1));
+    //delay(300);
     if(key != lastButtonState){
         pressFlag = 0;
         keepval = key;
@@ -172,8 +205,54 @@ byte returnKey(){
     return -1;
 }
 
+void lcdIDLE(){
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print("Ready!");
+}
+
+/// add
+byte CheckIDExists_t(String &uid, byte mode){
+    String *ref = (mode == 1)?itemSets:
+                  (mode == 2)?userSets:lendSets;
+    byte idx = (mode == 1)?i_idx:
+               (mode == 2)?u_idx:l_idx;
+    for(int i=0; i<idx; i++){
+        if(uid.equals(ref[i].substring(0,uid.length()))){
+            if(mode == 1){
+                Serial.println(F("item ID exist!!"));
+            }
+            else if (mode == 2){
+                Serial.println(F("User ID exist!!"));
+            }
+            else{
+                if(ref[i][ref[i].length()-1] == '0'){
+                  return 0;
+                }
+                Serial.println(F("item has been borrowed!!"));  
+            }
+            return 1;
+        }
+    }return 0;
+}
+
 void loop() {
-    // 確認是否有新卡片
+
+    // Timer
+    if(TIFR1 & (1 << OCF1A)){
+        if(wrong_Flag && timer < 8){
+          timer++;
+            analogWrite(6, 180); // R
+            analogWrite(5, 0); // G
+        }else{
+            timer = 0;
+            wrong_Flag = false;
+            analogWrite(6, 0); // R
+            analogWrite(5, 180); // G
+        }
+        TIFR1 = (1<<OCF1A);
+    }
+    // Get key
     int key = returnKey();
     // Change State
     if(key == 1 && mode == 0){
@@ -184,18 +263,103 @@ void loop() {
         lcd.setCursor(0,1);
         lcd.print("Please Put Item");
     }
+    if(key == 2 && mode == 0){
+        mode = 2;
+        lcd.clear();
+        lcd.setCursor(0,0);
+        lcd.print("Login User:");
+        lcd.setCursor(0,1);
+        lcd.print("Please Put Card");
+    }
+    if(key == 3 && mode == 0){
+        mode = 3;
+        lcd.clear();
+        lcd.setCursor(0,0);
+        lcd.print("Lend Item:");
+        lcd.setCursor(0,1);
+        lcd.print("Please Put Item");
+    }
+    if(key == 4 && mode == 0){
+        mode = 4;
+        lcd.clear();
+        lcd.setCursor(0,0);
+        lcd.print("Return Item:");
+        lcd.setCursor(0,1);
+        lcd.print("Please Put Item");
+    }
     // State Contents
-    if(mode == 1){
+    if(mode != 0){
+        // jump state
+        if(key == 11){
+            mode = 0; lockFlag = 0; cursor = 0;
+            UID = "";
+            lcdIDLE();
+        }
         if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial() && lockFlag == 0) {
             lockFlag = 1;
             Serial.println(F("Enter RFID"));
             // basic card info
             byte *id = mfrc522.uid.uidByte;   // 取得卡片的UID
             byte idSize = mfrc522.uid.size;   // 取得UID的長度
-            // item uuid 
+            // rfid uuid 
             for(byte i=0; i < idSize; i++){
-              itemUID += String(id[i],DEC);
+              UID += String(id[i],DEC);
             }
+            //// add ////
+            if(mode < 3){
+                 if(!CheckIDExists_t(UID, mode)){
+                     if(mode == 1){
+                          lcd.clear();
+                          lcd.setCursor(0,0);
+                          lcd.print("Enter ID:");
+                      }else{
+                          Serial.println(F("Input Card"));
+                      }
+                  }else{
+                      wrong_Flag = true;
+                      lockFlag = 0;
+                      UID = "";
+                  } 
+            }else{
+                  if(mode == 3){
+                      if(lendFlag == 0 && CheckIDExists_t(UID, 1)){ // check item ID
+                          if(!CheckIDExists_t(UID, 3)){
+                                lendFlag = 1;
+                                lendSets[l_idx] = UID;
+                                lcd.clear();
+                                lcd.setCursor(0,0);
+                                lcd.print("Please Put Card"); 
+                          }else{
+                              wrong_Flag = true;
+                          }
+                      }else if(lendFlag == 1 && CheckIDExists_t(UID, 2)){ // check user ID
+                          lendFlag = 0; mode = 0;
+                          lendSets[l_idx++] += ":" + UID;
+                          lcdIDLE();
+                          l_idx = l_idx % 4;
+                      }else{
+                        wrong_Flag = true;
+                      }
+                      lockFlag = 0;
+                      UID = "";
+                  }else{
+                      if(CheckIDExists_t(UID, 1)){
+                          if(CheckIDExists_t(UID, 3)){
+                              Serial.println(F("Return Item"));
+                              lcdIDLE();
+                              UID = "";
+                          }else{
+                              wrong_Flag = true;
+                              lockFlag = 0;
+                          }
+                      }else{
+                          wrong_Flag = true;  
+                          lockFlag = 0;
+                      }
+                      
+                  }
+            }
+            //// add ////
             /*>>>>>>>>>>>>>>>if(!checkIDExist(itemUID,"card.txt")){
                 Serial.println(F("New Item login!!"));
                 lcd.clear();
@@ -206,44 +370,52 @@ void loop() {
                 Serial.println(F("Item has been logged!!"));
                 lockFlag = 0;
             }>>>>>>>>>>>>>>>>>*/
-            lcd.clear();
-            lcd.setCursor(0,0);
-            lcd.print("Enter ID:");
             mfrc522.PICC_HaltA();
             //>>>>>>>>>>>>>>>>turnOnRFID();
         }
-        if(lockFlag == 1 && pressFlag == 1){
-            if(key == 10 && cursor > 0){ // press C
-                cursor--;
-                lcd.setCursor(cursor,1);
-                lcd.print(" ");
-            }
-            else if(key < 10 && cursor < 4){
-                lcd.setCursor(cursor,1); 
-                lcd.print(key);
-                itemType[cursor] = key;
-                cursor++;
-            }else if(cursor >= 4){
-                // store info
-                if(key == 11){
-                    Serial.println(F("Save Info"));
-                    // initial 
-                    mode = 0; lockFlag = 0; cursor = 0;
-                    // write SD
-                    String itemTypeStr;
-                    //>>>>>>>>>>>>>>>>> turnOnSD();
-                    for(byte i=0; i<4; i++)
-                        itemTypeStr += String(itemType[i], DEC);
-                    //>>>>>>>>>>>>>>>>> writeSD(itemUID + ":" + itemTypeStr,"item.txt");
-                    itemUID = "";
-                    //>>>>>>>>>>>>>>>>> turnOnRFID();
-                    // lcd
-                    lcd.clear();
-                    lcd.setCursor(0,0);
-                    lcd.print("Ready!");
+        if(lockFlag == 1 && pressFlag == 1 && mode < 3){
+            if(mode == 1){
+                if(key == 10 && cursor > 0){ // press C
+                    cursor--;
+                    lcd.setCursor(cursor,1);
+                    lcd.print(" ");
                 }
+                else if(key < 10 && cursor < 4){
+                    lcd.setCursor(cursor,1); 
+                    lcd.print(key);
+                    itemType[cursor] = key;
+                    cursor++;
+                }else if(cursor >= 4){
+                    // store info
+                    if(key == 12){
+                        Serial.println(F("Save Item Info"));
+                        // initial 
+                        mode = 0; lockFlag = 0; cursor = 0;
+                        // write SD
+                        String itemTypeStr;
+                        for(byte i=0; i<4; i++)
+                            itemTypeStr += String(itemType[i], DEC);
+                        itemSets[i_idx] = UID + ":" + itemTypeStr; // add
+                        Serial.println(itemSets[i_idx%2]); // add
+                        i_idx = (i_idx == 2)?2:i_idx+1;   // add
+                        //>>>>>>>>>>>>>>>>> turnOnSD();
+                        //>>>>>>>>>>>>>>>>> writeSD(itemUID + ":" + itemTypeStr,"item.txt");
+                        //>>>>>>>>>>>>>>>>> turnOnRFID();
+                        // lcd
+                        lcdIDLE();
+                        UID = "";
+                    }
+                } 
+            }else{
+                  if(key == 12){
+                      mode = 0; lockFlag = 0;
+                      userSets[u_idx%2] = UID;
+                      u_idx = (u_idx == 2)?2:u_idx+1;   
+                      lcdIDLE();
+                      UID = "";
+                  }
             }
         }
-     } 
+     }
 }
 
